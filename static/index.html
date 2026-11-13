@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文字起こし</title>
+<style>
+:root { --bg:#f6f6f4; --fg:#1d1d1b; --muted:#6b6b66; --card:#fff; --line:#ddddd8; --accent:#2f6fde; --rec:#d93a3a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#171716; --fg:#ececea; --muted:#9a9a94; --card:#222220; --line:#353532; --accent:#6b9cf0; --rec:#f06b6b; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 system-ui, "Noto Sans JP", sans-serif; }
+main { max-width:860px; margin:0 auto; padding:16px; }
+h1 { font-size:20px; margin:4px 0 2px; }
+#status { color:var(--muted); font-size:13px; margin-bottom:14px; }
+#status.ng { color:var(--rec); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+button, label.btn, select { padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--fg); cursor:pointer; font-size:14px; }
+button:hover, label.btn:hover { border-color:var(--accent); }
+button:disabled { opacity:.5; cursor:default; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+#rec.on { background:var(--rec); border-color:var(--rec); color:#fff; }
+#rec .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--rec); margin-right:6px; vertical-align:0; }
+#rec.on .dot { background:#fff; animation:blink 1s infinite; }
+@keyframes blink { 50% { opacity:.2; } }
+#timer { font-variant-numeric:tabular-nums; color:var(--muted); min-width:4em; }
+.drop { margin-top:10px; padding:16px; border:2px dashed var(--line); border-radius:8px; text-align:center; color:var(--muted); font-size:14px; }
+body.drag .drop { border-color:var(--accent); color:var(--accent); }
+input[type=text] { flex:1; min-width:200px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--fg); font-size:14px; }
+label.small { font-size:13px; color:var(--muted); }
+audio { width:100%; margin-top:10px; }
+progress { width:100%; height:8px; margin-top:8px; }
+#info { color:var(--muted); font-size:13px; margin-top:6px; }
+#segs { margin:0; padding:0; list-style:none; }
+#segs li { display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+#segs li:last-child { border-bottom:0; }
+#segs .t { flex:none; width:7.5em; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; padding-top:2px; }
+#segs .x { flex:1; white-space:pre-wrap; }
+#segs .err { color:var(--rec); }
+#segs .wait { color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>文字起こし</h1>
+  <div id="status">llama-server を確かめています…</div>
+
+  <div class="card">
+    <div class="row">
+      <button id="rec"><span class="dot"></span><span id="recLabel">録音する</span></button>
+      <span id="timer"></span>
+      <label class="btn">音声ファイルを選ぶ<input id="file" type="file" accept="audio/*,video/*" hidden></label>
+    </div>
+    <div class="drop">音声ファイル(mp3・m4a・wav など)をここにドロップ</div>
+    <audio id="player" controls hidden></audio>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label class="small" for="lang">言語</label>
+      <select id="lang"><option value="ja">日本語</option><option value="en">英語</option><option value="auto">自動</option></select>
+      <input id="hint" type="text" placeholder="出てくる名前や用語(任意。例: llama.cpp、Gemma、もも)">
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="go" class="primary" disabled>文字起こしする</button>
+      <button id="stop" disabled>中止</button>
+    </div>
+    <progress id="prog" value="0" max="1" hidden></progress>
+    <div id="info"></div>
+  </div>
+
+  <div class="card" id="resultCard" hidden>
+    <div class="row" style="justify-content:space-between">
+      <strong>結果</strong>
+      <span class="row">
+        <button id="copy">コピー</button>
+        <button id="saveTxt">テキストで保存</button>
+        <button id="saveSrt">字幕(.srt)で保存</button>
+      </span>
+    </div>
+    <ul id="segs"></ul>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const RATE = 16000;  // Gemma 4 の音声は 16kHz・モノラル
+let wav = null, wavName = 'audio', segs = [], ctrl = null;
+
+const fmt = s => { s = Math.max(0, s); const m = Math.floor(s / 60), r = s - m * 60; return `${String(m).padStart(2, '0')}:${r.toFixed(0).padStart(2, '0')}`; };
+const srtTime = s => { const ms = Math.round(s * 1000), h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, ss = Math.floor(ms / 1000) % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`; };
+
+// ---- どんな音声も 16kHz・モノラルの WAV にする(ブラウザの中で。サーバーに ffmpeg は要らない) ----
+async function toWav16k(blob) {
+  const buf = await blob.arrayBuffer();
+  const tmp = new AudioContext();
+  const src = await tmp.decodeAudioData(buf);
+  tmp.close();
+  const off = new OfflineAudioContext(1, Math.ceil(src.duration * RATE), RATE);
+  const node = off.createBufferSource();
+  node.buffer = src; node.connect(off.destination); node.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+  const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  const str = (o, s) => [...s].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+  out.setUint32(24, RATE, true); out.setUint32(28, RATE * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true);
+  str(36, 'data'); out.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return { blob: new Blob([out], { type: 'audio/wav' }), duration: src.duration };
+}
+
+async function setAudio(blob, name) {
+  $('info').textContent = '音声を変換しています…';
+  try {
+    const r = await toWav16k(blob);
+    wav = r.blob; wavName = name.replace(/\.[^.]+$/, '') || 'audio';
+    $('player').src = URL.createObjectURL(blob); $('player').hidden = false;
+    $('info').textContent = `${name}(${fmt(r.duration)})`;
+    $('go').disabled = false;
+  } catch (e) { $('info').textContent = 'この音声は読めませんでした: ' + e.message; }
+}
+
+// ---- 録音 ----
+let rec = null, chunks = [], t0 = 0, tick = null;
+$('rec').onclick = async () => {
+  if (rec) { rec.stop(); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { alert('マイクが使えません: ' + e.message); return; }
+  rec = new MediaRecorder(stream); chunks = [];
+  rec.ondataavailable = e => chunks.push(e.data);
+  rec.onstop = () => {
+    stream.getTracks().forEach(t => t.stop()); clearInterval(tick);
+    $('rec').classList.remove('on'); $('recLabel').textContent = '録音する'; rec = null;
+    setAudio(new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' }), `録音_${new Date().toLocaleTimeString('ja-JP').replace(/:/g, '')}.webm`);
+  };
+  rec.start(); t0 = Date.now();
+  $('rec').classList.add('on'); $('recLabel').textContent = '止める';
+  tick = setInterval(() => { $('timer').textContent = fmt((Date.now() - t0) / 1000); }, 250);
+};
+
+$('file').onchange = e => { const f = e.target.files[0]; if (f) setAudio(f, f.name); };
+document.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('drag'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('drag'); });
+document.addEventListener('drop', e => { e.preventDefault(); document.body.classList.remove('drag'); const f = e.dataTransfer.files[0]; if (f) setAudio(f, f.name); });
+
+// ---- 文字起こし(区切りごとの結果が 1 行ずつ流れてくる) ----
+function renderSegs() {
+  $('resultCard').hidden = !segs.length;
+  $('segs').replaceChildren(...segs.map(s => {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="t"></span><span class="x"></span>';
+    li.querySelector('.t').textContent = `${fmt(s.start)}–${fmt(s.end)}`;
+    const x = li.querySelector('.x');
+    if (s.error) { x.textContent = 'エラー: ' + s.error; x.classList.add('err'); }
+    else if (s.text == null) { x.textContent = '文字起こし中…'; x.classList.add('wait'); }
+    else x.textContent = s.text || '(無音)';
+    return li;
+  }));
+}
+
+$('go').onclick = async () => {
+  ctrl = new AbortController();
+  $('go').disabled = true; $('stop').disabled = false; $('prog').hidden = false; $('prog').value = 0;
+  segs = []; renderSegs();
+  const started = performance.now(); let duration = 0;
+  try {
+    const q = new URLSearchParams({ lang: $('lang').value, hint: $('hint').value });
+    const r = await fetch('/api/transcribe?' + q, { method: 'POST', body: wav, signal: ctrl.signal });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const m = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
+        if (m.type === 'start') { duration = m.duration; $('prog').max = m.total; $('info').textContent = `${m.total} 個に分けて文字起こしします…`; }
+        if (m.type === 'chunk') {
+          segs[m.index] = m; $('prog').value = m.index + 1;
+          if (m.index + 1 < m.total) segs[m.index + 1] = { start: m.end, end: m.end, text: null };
+          renderSegs();
+          const sec = (performance.now() - started) / 1000;
+          $('info').textContent = `${m.index + 1}/${m.total} ・ ${sec.toFixed(1)} 秒`;
+        }
+      }
+    }
+    const sec = (performance.now() - started) / 1000;
+    $('info').textContent = `完了 ・ 音声 ${fmt(duration)} を ${sec.toFixed(1)} 秒で文字起こし(音声の長さの ${(sec / Math.max(duration, 0.1)).toFixed(2)} 倍の時間)`;
+  } catch (e) {
+    $('info').textContent = e.name === 'AbortError' ? '中止しました' : 'エラー: ' + e.message;
+    segs = segs.filter(s => s.text != null || s.error); renderSegs();
+  } finally {
+    $('go').disabled = !wav; $('stop').disabled = true; ctrl = null;
+  }
+};
+$('stop').onclick = () => ctrl && ctrl.abort();
+
+// ---- 保存 ----
+const done = () => segs.filter(s => s.text);
+function save(text, ext, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = `${wavName}.${ext}`; a.click();
+}
+$('copy').onclick = () => navigator.clipboard.writeText(done().map(s => s.text).join('\n')).then(() => { $('copy').textContent = 'コピーしました'; setTimeout(() => $('copy').textContent = 'コピー', 1500); });
+$('saveTxt').onclick = () => save(done().map(s => s.text).join('\n') + '\n', 'txt', 'text/plain');
+$('saveSrt').onclick = () => save(done().map((s, i) => `${i + 1}\n${srtTime(s.start)} --> ${srtTime(s.end)}\n${s.text}\n`).join('\n'), 'srt', 'application/x-subrip');
+
+// ---- llama-server の状態 ----
+async function check() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    $('status').className = s.ok ? '' : 'ng';
+    $('status').textContent = s.ok ? `llama-server: ${s.model || '動いています'}(${s.base_url})・${s.chunk_sec} 秒ごとに分けて処理`
+      : `llama-server に接続できません(${s.base_url})。音声が扱えるモデルで起動してください。`;
+    if (!s.ok) setTimeout(check, 5000);
+  } catch { $('status').className = 'ng'; $('status').textContent = 'サーバーに接続できません'; setTimeout(check, 5000); }
+}
+check();
+</script>
+</body>
+</html>
