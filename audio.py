@@ -11,16 +11,49 @@ import numpy as np
 RATE = 16000  # Gemma 4 の音声は 16kHz・モノラル
 
 
+def _parse_wav(data: bytes) -> tuple[np.ndarray, int]:
+    """WAV を読んで (-1〜1 の float32 の配列[サンプル, チャンネル], サンプリング周波数) を返す。
+
+    標準の wave モジュールが読めない形式(32 ビット浮動小数点、拡張ヘッダー)も読む。
+    """
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("WAV ではありません")
+    fmt, body, o = None, None, 12
+    while o + 8 <= len(data):
+        cid, size = data[o:o + 4], int.from_bytes(data[o + 4:o + 8], "little")
+        if cid == b"fmt ":
+            code = int.from_bytes(data[o + 8:o + 10], "little")
+            if code == 0xFFFE:  # WAVE_FORMAT_EXTENSIBLE
+                code = int.from_bytes(data[o + 32:o + 34], "little")
+            fmt = (code, int.from_bytes(data[o + 10:o + 12], "little"), int.from_bytes(data[o + 12:o + 16], "little"),
+                   int.from_bytes(data[o + 22:o + 24], "little"))
+        elif cid == b"data":
+            body = data[o + 8:o + 8 + size]
+        o += 8 + size + (size & 1)
+    if not fmt or body is None:
+        raise ValueError("WAV の中身が見つかりません")
+    code, ch, rate, bits = fmt
+    if code == 3 and bits in (32, 64):
+        x = np.frombuffer(body[: len(body) // (bits // 8) * (bits // 8)], dtype=np.float32 if bits == 32 else np.float64)
+    elif code == 1 and bits == 8:
+        x = (np.frombuffer(body, dtype=np.uint8).astype(np.float32) - 128) / 128
+    elif code == 1 and bits == 16:
+        x = np.frombuffer(body[: len(body) // 2 * 2], dtype="<i2") / 32768
+    elif code == 1 and bits == 24:
+        b = np.frombuffer(body[: len(body) // 3 * 3], dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        x = ((b[:, 0] << 8 | b[:, 1] << 16 | b[:, 2] << 24) >> 8) / 8388608
+    elif code == 1 and bits == 32:
+        x = np.frombuffer(body[: len(body) // 4 * 4], dtype="<i4") / 2147483648
+    else:
+        raise ValueError(f"この WAV の形式には対応していません(形式 {code}、{bits} ビット)")
+    x = x[: len(x) // ch * ch].astype(np.float32).reshape(-1, ch)
+    return x, rate
+
+
 def read_wav(data: bytes) -> np.ndarray:
-    """WAV のバイト列を、16kHz・モノラルの int16 の配列にする。"""
-    with wave.open(io.BytesIO(data)) as w:
-        ch, width, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
-        raw = w.readframes(n)
-    if width != 2:
-        raise ValueError("16 ビットの WAV だけ扱えます")
-    x = np.frombuffer(raw, dtype=np.int16)
-    if ch > 1:
-        x = x.reshape(-1, ch).mean(axis=1).astype(np.int16)
+    """WAV のバイト列を、16kHz・モノラルの int16 の配列にする(8/16/24/32 ビット、浮動小数点、多チャンネルに対応)。"""
+    f, rate = _parse_wav(data)
+    x = (np.clip(f.mean(axis=1), -1, 1) * 32767).astype(np.int16)
     if rate != RATE:  # ふつうはブラウザで変換済み。違うときだけ簡単に合わせる
         t = np.linspace(0, len(x) / rate, int(len(x) * RATE / rate), endpoint=False)
         x = np.interp(t, np.arange(len(x)) / rate, x).astype(np.int16)

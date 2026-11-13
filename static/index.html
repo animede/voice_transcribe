@@ -49,7 +49,7 @@ progress { width:100%; height:8px; margin-top:8px; }
     <div class="row">
       <button id="rec"><span class="dot"></span><span id="recLabel">録音する</span></button>
       <span id="timer"></span>
-      <label class="btn">音声ファイルを選ぶ<input id="file" type="file" accept="audio/*,video/*" hidden></label>
+      <label class="btn">音声ファイルを選ぶ<input id="file" type="file" accept="audio/*,video/*,.wav,.wave,.mp3,.m4a,.ogg,.flac,.webm" hidden></label>
     </div>
     <div class="drop">音声ファイル(mp3・m4a・wav など)をここにドロップ</div>
     <audio id="player" controls hidden></audio>
@@ -91,11 +91,48 @@ const srtTime = s => { const ms = Math.round(s * 1000), h = Math.floor(ms / 3600
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`; };
 
 // ---- どんな音声も 16kHz・モノラルの WAV にする(ブラウザの中で。サーバーに ffmpeg は要らない) ----
+// WAV を自前で読む(ブラウザが読めない WAV のため。PCM 8/16/24/32 ビット、32/64 ビット浮動小数点、拡張ヘッダーに対応)
+function parseWav(buf) {
+  const v = new DataView(buf), tag = o => String.fromCharCode(...new Uint8Array(buf, o, 4));
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null;
+  let fmt = null, data = null;
+  for (let o = 12; o + 8 <= buf.byteLength; ) {
+    const id = tag(o), size = v.getUint32(o + 4, true);
+    if (id === 'fmt ') {
+      let code = v.getUint16(o + 8, true);
+      if (code === 0xfffe) code = v.getUint16(o + 32, true);  // WAVE_FORMAT_EXTENSIBLE
+      fmt = { code, ch: v.getUint16(o + 10, true), rate: v.getUint32(o + 12, true), bits: v.getUint16(o + 22, true) };
+    } else if (id === 'data') data = { off: o + 8, size: Math.min(size, buf.byteLength - o - 8) };
+    o += 8 + size + (size & 1);
+  }
+  if (!fmt || !data || !((fmt.code === 1 && [8, 16, 24, 32].includes(fmt.bits)) || (fmt.code === 3 && [32, 64].includes(fmt.bits))))
+    throw new Error(`この WAV の形式には対応していません(形式 ${fmt?.code}、${fmt?.bits} ビット)`);
+  const bps = fmt.bits / 8, n = Math.floor(data.size / bps / fmt.ch), ctx = new OfflineAudioContext(fmt.ch, n, fmt.rate);
+  const ab = ctx.createBuffer(fmt.ch, n, fmt.rate);
+  for (let c = 0; c < fmt.ch; c++) {
+    const out = ab.getChannelData(c);
+    for (let i = 0; i < n; i++) {
+      const o = data.off + (i * fmt.ch + c) * bps;
+      out[i] = fmt.code === 3 ? (bps === 4 ? v.getFloat32(o, true) : v.getFloat64(o, true))
+        : bps === 1 ? (v.getUint8(o) - 128) / 128
+        : bps === 2 ? v.getInt16(o, true) / 32768
+        : bps === 3 ? (((v.getUint8(o + 2) << 24) | (v.getUint8(o + 1) << 16) | (v.getUint8(o) << 8)) >> 8) / 8388608
+        : v.getInt32(o, true) / 2147483648;
+    }
+  }
+  return ab;
+}
+
+async function decode(buf) {
+  const tmp = new AudioContext();
+  try { return await tmp.decodeAudioData(buf.slice(0)); }
+  catch (e) { const w = parseWav(buf); if (w) return w; throw e; }  // ブラウザが読めなければ WAV として自前で読む
+  finally { tmp.close(); }
+}
+
 async function toWav16k(blob) {
   const buf = await blob.arrayBuffer();
-  const tmp = new AudioContext();
-  const src = await tmp.decodeAudioData(buf);
-  tmp.close();
+  const src = await decode(buf);
   const off = new OfflineAudioContext(1, Math.ceil(src.duration * RATE), RATE);
   const node = off.createBufferSource();
   node.buffer = src; node.connect(off.destination); node.start();
