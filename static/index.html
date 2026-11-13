@@ -250,10 +250,14 @@ $('saveSrt').onclick = () => save(done().map((s, i) => `${i + 1}\n${srtTime(s.st
 async function check() {
   try {
     const s = await (await fetch('/api/status')).json();
-    $('status').className = s.ok ? '' : 'ng';
-    $('status').textContent = s.ok ? `llama-server: ${s.model || '動いています'}(${s.base_url})・${s.chunk_sec} 秒ごとに分けて処理`
-      : `llama-server に接続できません(${s.base_url})。音声が扱えるモデルで起動してください。`;
-    if (!s.ok) setTimeout(check, 5000);
+    const ng = !s.ok || s.audio === false;
+    $('status').className = ng ? 'ng' : '';
+    $('status').textContent = !s.ok
+      ? `llama-server に接続できません(${s.base_url})。start_llama.bat などで、音声が扱えるモデルで起動してください。`
+      : s.audio === false
+      ? `llama-server(${s.model})は音声を扱えません。--no-mmproj を付けずに、Gemma 4 の E2B か E4B で起動し直してください。`
+      : `llama-server: ${s.model || '動いています'}(${s.base_url})・${s.chunk_sec} 秒ごとに分けて処理`;
+    if (ng) setTimeout(check, 5000);
   } catch { $('status').className = 'ng'; $('status').textContent = 'サーバーに接続できません'; setTimeout(check, 5000); }
 }
 check();

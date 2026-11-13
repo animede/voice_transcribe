@@ -9,31 +9,37 @@
 
 音声はブラウザの中で 16kHz・モノラルの WAV に変換してから送るので、サーバーに ffmpeg は要らない。AI の部分は llama-server が受け持つので、このアプリ自体は軽い(依存は FastAPI・uvicorn・httpx・numpy だけ)。
 
-## 1. llama-server を起動する
+## 使い方(Windows・PowerShell)
 
-音声が扱えるモデル(Gemma 4 の E2B か E4B)で起動する。`-hf` で指定すると、音声と画像を扱う部分(mmproj)も一緒にダウンロードされる。
+ターミナルを 2 つ使う。1 つ目で llama-server、2 つ目でこのアプリを動かす。
+
+1. llama.cpp を入れる(初回だけ。入れたらターミナルを開き直す)
+   ```
+   winget install llama.cpp
+   ```
+2. 1 つ目のターミナルで llama-server を起動する(初回はモデルをダウンロードする)
+   ```
+   .\start_llama.bat
+   ```
+   Gemma 4 E2B を、音声を扱う部分(mmproj)と一緒に読み込む。大きい E4B を使うなら `$env:LLM_MODEL = "unsloth/gemma-4-E4B-it-GGUF"` を設定してから起動する。
+3. 2 つ目のターミナルでアプリを入れて起動する
+   ```
+   .\setup.bat
+   .\run.bat
+   ```
+4. ブラウザで http://127.0.0.1:7880 を開く。初めて録音するときは、マイクを使ってよいかを聞かれるので「許可」を選ぶ。
+
+止めるときは、それぞれのターミナルで Ctrl+C を押す。
+
+**`--no-mmproj` を付けない**:mmproj は音声と画像を受け取る部分。前作の「困ったとき」で紹介した `--no-mmproj` を付けて起動すると、音声を渡せない。画面の上に「音声を扱えません」と出たら、付けずに起動し直す。
+
+## 使い方(Linux / macOS)
 
 ```
-llama-server -hf unsloth/gemma-4-E2B-it-GGUF --reasoning off
-```
-
-Windows で llama.cpp を入れるには `winget install llama.cpp`。
-
-## 2. アプリを起動する
-
-### Windows(PowerShell)
-```
-.\setup.bat
-.\run.bat
-```
-
-### Linux / macOS
-```
-./setup.sh
+./start_llama.sh      # 1 つ目のターミナル
+./setup.sh            # 2 つ目のターミナル(初回だけ)
 ./run.sh
 ```
-
-ブラウザで http://127.0.0.1:7880 を開く。
 
 ## 設定(環境変数)
 
@@ -50,6 +56,7 @@ PowerShell では `$env:LLM_BASE_URL = "http://127.0.0.1:8081/v1"` のように�
 - `server.py` API と画面の配信。区切りごとに llama-server へ音声を送り、結果を 1 行 1 件の JSON で順に返す
 - `audio.py` WAV の読み書き、静かなところで分ける、無音の判定
 - `static/index.html` 画面(録音、16kHz WAV への変換、結果の表示と保存)
+- `start_llama.bat` / `start_llama.sh` llama-server を Gemma 4 E2B で起動する
 
 ## 注意
 

@@ -2,8 +2,8 @@
 
 起動:
     先に llama-server を、音声が扱えるモデルで起動しておく(例: Gemma 4 E2B / E4B)。
-        llama-server -hf unsloth/gemma-4-E2B-it-GGUF --reasoning off
-    そのあと ./run.sh(Windows は .\\run.bat)。ブラウザで http://127.0.0.1:7880 を開く。
+        .\\start_llama.bat(Linux は ./start_llama.sh)
+    そのあと別のターミナルで ./run.sh(Windows は .\\run.bat)。ブラウザで http://127.0.0.1:7880 を開く。
 
 環境変数:
     LLM_BASE_URL  llama-server の場所。既定は http://127.0.0.1:8080/v1
@@ -44,17 +44,30 @@ def page():
     return FileResponse(HERE / "static" / "index.html")
 
 
+def client(timeout: float) -> httpx.AsyncClient:
+    # trust_env=False: HTTP_PROXY などの設定を使わない(会社のプロキシ設定があると、127.0.0.1 への接続まで
+    # プロキシに送られて失敗することがある。Windows で起きやすい)
+    return httpx.AsyncClient(timeout=timeout, trust_env=False)
+
+
 @app.get("/api/status")
 async def status():
-    """llama-server が動いているか、どのモデルかを調べる。"""
+    """llama-server が動いているか、どのモデルか、音声を扱えるかを調べる。"""
+    info = {"ok": False, "audio": None, "base_url": LLM_BASE_URL, "chunk_sec": CHUNK_SEC}
     try:
-        async with httpx.AsyncClient(timeout=3) as c:
+        async with client(3) as c:
             r = await c.get(f"{LLM_BASE_URL}/models")
             r.raise_for_status()
             models = [m.get("id", "") for m in r.json().get("data", [])]
-        return {"ok": True, "base_url": LLM_BASE_URL, "model": models[0] if models else "", "chunk_sec": CHUNK_SEC}
+            info.update(ok=True, model=models[0] if models else "")
+            # llama-server は /props で、音声を扱えるか(mmproj を読み込んだか)を教えてくれる
+            root = LLM_BASE_URL[:-3] if LLM_BASE_URL.endswith("/v1") else LLM_BASE_URL
+            p = await c.get(f"{root}/props")
+            if p.status_code == 200:
+                info["audio"] = bool(p.json().get("modalities", {}).get("audio"))
     except Exception as e:
-        return {"ok": False, "base_url": LLM_BASE_URL, "error": str(e), "chunk_sec": CHUNK_SEC}
+        info["error"] = str(e)
+    return info
 
 
 async def transcribe_chunk(c: httpx.AsyncClient, wav: bytes, text: str) -> str:
@@ -67,6 +80,9 @@ async def transcribe_chunk(c: httpx.AsyncClient, wav: bytes, text: str) -> str:
     }
     r = await c.post(f"{LLM_BASE_URL}/chat/completions", json=body)
     if r.status_code != 200:
+        if "audio" in r.text.lower() and ("not supported" in r.text.lower() or "mmproj" in r.text.lower()):
+            raise RuntimeError("いまの llama-server は音声を扱えません。--no-mmproj を付けずに、"
+                               "Gemma 4 の E2B か E4B で起動し直してください(start_llama.bat)")
         raise RuntimeError(f"llama-server がエラーを返しました({r.status_code}): {r.text[:300]}")
     return r.json()["choices"][0]["message"]["content"].strip()
 
@@ -86,7 +102,7 @@ async def transcribe(request: Request, lang: str = Query("ja"), hint: str = Quer
 
     async def run():
         yield json.dumps({"type": "start", "total": len(parts), "duration": len(x) / audio.RATE}) + "\n"
-        async with httpx.AsyncClient(timeout=300) as c:
+        async with client(300) as c:
             for i, (s, e) in enumerate(parts):
                 seg = x[s:e]
                 t = time.perf_counter()
