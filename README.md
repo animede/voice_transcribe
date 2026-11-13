@@ -17,13 +17,16 @@
    ```
    winget install llama.cpp
    ```
-2. 1 つ目のターミナルで llama-server を起動する(初回はモデルをダウンロードする)
+2. 1 つ目のターミナルで、このアプリのフォルダに移動して llama-server を起動する(初回はモデルをダウンロードする)
    ```
+   cd $HOME\voice_transcribe
    .\start_llama.bat
    ```
-   Gemma 4 E2B を、音声を扱う部分(mmproj)と一緒に読み込む。大きい E4B を使うなら `$env:LLM_MODEL = "unsloth/gemma-4-E4B-it-GGUF"` を設定してから起動する。
-3. 2 つ目のターミナルでアプリを入れて起動する
+   `cd` の先は、`git clone` したフォルダにする。
+   Gemma 4 E2B を、音声を扱う部分(mmproj)と一緒に読み込む。大きい E4B を使うなら `$env:LLM_MODEL = "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M"` を設定してから起動する。
+3. 2 つ目のターミナルでも同じフォルダに移動して、アプリを入れて起動する
    ```
+   cd $HOME\voice_transcribe
    .\setup.bat
    .\run.bat
    ```
