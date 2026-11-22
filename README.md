@@ -36,6 +36,20 @@
 
 **`--no-mmproj` を付けない**:mmproj は音声と画像を受け取る部分。前作の「困ったとき」で紹介した `--no-mmproj` を付けて起動すると、音声を渡せない。画面の上に「音声を扱えません」と出たら、付けずに起動し直す。
 
+### アイコンから起動する(Windows)
+
+`.\setup.bat` のあとに次を一度実行すると、デスクトップに「文字起こし」のアイコンができる。
+
+```
+.\.venv\Scripts\python.exe launch.py --shortcut
+```
+
+アイコンを開くと、上の 2 つのターミナルの手順(`start_llama.bat` と `run.bat`)を 1 つの窓でまとめて行い、ブラウザで画面を開く。窓を閉じると、そのとき起動したものが止まる。
+
+- llama-server がすでに動いていれば、それを使う(AITuber Studio などと共用できる)。動いていなければ、`start_llama.bat` と同じ設定(`LLM_MODEL`、`LLM_CTX`)で起動する
+- モデルが Hugging Face のキャッシュにあればそれを読み、無ければダウンロードする
+- アイコンからは環境変数を渡しにくいので、設定はこのフォルダの `launch.env` に `LLM_MODEL=unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` のように 1 行に 1 つずつ書ける(git では管理しない)
+
 ## 使い方(Linux / macOS)
 
 ```
@@ -60,6 +74,7 @@ PowerShell では `$env:LLM_BASE_URL = "http://127.0.0.1:8081/v1"` のように�
 - `audio.py` WAV の読み書き、静かなところで分ける、無音の判定
 - `static/index.html` 画面(録音、16kHz WAV への変換、結果の表示と保存)
 - `start_llama.bat` / `start_llama.sh` llama-server を Gemma 4 E2B で起動する
+- `launch.py` / `icon.ico` llama-server とアプリを 1 つの窓でまとめて起動するランチャー(デスクトップのアイコン用)
 
 ## 注意
 
